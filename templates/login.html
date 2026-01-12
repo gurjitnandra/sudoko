@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign In • Multiplayer Sudoku</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/auth.css" />
+</head>
+<body class="auth-body">
+    <main class="auth-container">
+        <section class="auth-panel">
+            <header>
+                <h1>Welcome back</h1>
+                <p class="hint">Log in or create an account to access the multiplayer lobby.</p>
+            </header>
+
+            <nav class="auth-tabs" role="tablist">
+                <button type="button" class="auth-tab" data-target="login" aria-selected="true">Login</button>
+                <button type="button" class="auth-tab" data-target="register" aria-selected="false">Register</button>
+            </nav>
+
+            <section id="login-pane" class="auth-pane" role="tabpanel">
+                <form id="login-form" class="stack" autocomplete="on">
+                    <label class="field">
+                        <span>Username</span>
+                        <input type="text" name="username" required />
+                    </label>
+                    <label class="field">
+                        <span>Password</span>
+                        <input type="password" name="password" required />
+                    </label>
+                    <input type="hidden" name="client" value="web" />
+                    <button type="submit" class="btn primary">Log In</button>
+                </form>
+            </section>
+
+            <section id="register-pane" class="auth-pane" role="tabpanel" hidden>
+                <form id="register-form" class="stack" autocomplete="on">
+                    <label class="field">
+                        <span>Username</span>
+                        <input type="text" name="username" minlength="3" maxlength="32" required />
+                    </label>
+                    <label class="field">
+                        <span>Email</span>
+                        <input type="email" name="email" required />
+                    </label>
+                    <label class="field">
+                        <span>Password</span>
+                        <input type="password" name="password" minlength="8" maxlength="128" required />
+                    </label>
+                    <button type="submit" class="btn">Create Account</button>
+                </form>
+            </section>
+
+            <footer class="auth-footer">
+                <output id="auth-status" role="status" aria-live="polite"></output>
+            </footer>
+        </section>
+    </main>
+
+    <script src="/static/auth.js" type="module"></script>
+</body>
+</html>

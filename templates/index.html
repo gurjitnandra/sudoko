@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multiplayer Sudoku</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+    <header class="top-bar">
+        <div class="top-bar__user">
+            <span class="user-greeting">
+                {% if user and (user.display_name or user.username) %}
+                    Welcome, {{ user.display_name or user.username }}!
+                {% else %}
+                    Welcome, Guest!
+                {% endif %}
+            </span>
+            <span class="user-balance" id="user-balance"></span>
+        </div>
+        <div class="top-bar__actions">
+            <button type="button" class="btn subtle" id="refresh-balance-btn">Refresh Credits</button>
+            <button type="button" class="btn danger" id="logout-btn">Log Out</button>
+        </div>
+    </header>
+    <main class="layout">
+        <aside class="panel sidebar-panel">
+            <header class="panel__header">
+                <h2>Multiplayer Lobby</h2>
+            </header>
+
+            <section class="control-group" id="join-section">
+                <label>Join Existing Game</label>
+                <form id="join-form" class="stack">
+                    <input type="text" id="join-name" name="name" placeholder="Your name" required />
+                    <input type="text" id="join-session-id" name="sessionId" placeholder="Session ID" required />
+                    <button type="submit" class="btn">Join Game</button>
+                </form>
+            </section>
+
+            <section class="control-group" id="host-section">
+                <label>Host New Game</label>
+                <form id="host-form" class="stack">
+                    <input type="text" id="host-name" name="hostName" placeholder="Host name" required />
+                    <select id="host-difficulty" name="difficulty">
+                        <option value="easy">Easy</option>
+                        <option value="medium">Medium</option>
+                        <option value="hard">Hard</option>
+                    </select>
+                    <button type="submit" class="btn primary">Create &amp; Host</button>
+                </form>
+            </section>
+
+            <section class="control-group" id="session-info" hidden>
+                <label>Session Info</label>
+                <div class="tag">Session ID: <span id="session-id-display">----</span></div>
+                <small class="hint">Share this ID with friends on your LAN.</small>
+                <div class="session-actions">
+                    <button type="button" id="leave-btn" class="btn danger">Leave Game</button>
+                </div>
+            </section>
+
+            <section class="control-group" id="scoreboard" hidden>
+                <label>Scoreboard</label>
+                <ul class="score-list" id="score-list"></ul>
+            </section>
+
+            <footer class="panel__footer">
+                <p class="hint">Each player chooses a name to appear in the scoreboard. Moves add points when correct.</p>
+            </footer>
+        </aside>
+
+        <section class="panel main-panel">
+            <header class="panel__header">
+                <div>
+                    <h1>Sudoku Board</h1>
+                    <p class="subtext" id="session-status">Join or host a session to begin.</p>
+                </div>
+                <div class="header-meta">
+                    <div class="mistake-counter" id="mistake-counter" aria-live="polite">Mistakes: 0 / 3</div>
+                    <div class="status" id="status-bar">Awaiting session…</div>
+                </div>
+            </header>
+
+            <div class="board-wrapper">
+                <div class="board" id="sudoku-board" aria-label="Sudoku board" role="grid"></div>
+                <div class="overlay" id="board-overlay">
+                    <p id="board-empty-message">Select or create a session to play.</p>
+                    <p id="board-eliminated-message" hidden>You have reached the mistake limit. Better luck next time!</p>
+                </div>
+                <div class="restart-overlay d-none" id="restart-container">
+                    <div class="restart-content">
+                        <p class="restart-message">Everyone is out! As host, you can restart the puzzle for the same lobby.</p>
+                        <button type="button" class="btn primary restart-btn" id="restart-button">Restart Puzzle</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="loss-banner" id="loss-banner" hidden>You lost this round. Hang tight for the next game!</div>
+
+            <div class="controls-inline" id="board-controls" hidden>
+                <div class="control-row">
+                    <label>Numbers</label>
+                    <div class="number-pad" id="number-pad"></div>
+                </div>
+            </div>
+
+        </section>
+
+        <aside class="panel chat-panel" hidden>
+            <header class="panel__header">
+                <h2 id="chat-heading">Hello there!</h2>
+            </header>
+            <div class="emoji-bar" id="emoji-bar" aria-label="Quick emoji reactions">
+                <button type="button" class="emoji-btn" data-emoji="😀" aria-label="Send happy emoji">😀</button>
+                <button type="button" class="emoji-btn" data-emoji="😢" aria-label="Send sad emoji">😢</button>
+                <button type="button" class="emoji-btn" data-emoji="😤" aria-label="Send irritating emoji">😤</button>
+                <button type="button" class="emoji-btn" data-emoji="🏆" aria-label="Send winner emoji">🏆</button>
+                <button type="button" class="emoji-btn" data-emoji="😓" aria-label="Send loser emoji">😓</button>
+            </div>
+            <section class="chat-log" id="chat-log" aria-live="polite"></section>
+            <form id="chat-form" class="chat-form" autocomplete="off">
+                <input type="text" id="chat-input" name="message" placeholder="Type a message" maxlength="300" required />
+                <button type="submit" class="btn primary chat-send-btn" aria-label="Send message">➤</button>
+            </form>
+        </aside>
+    </main>
+
+    <template id="cell-template">
+        <button class="cell" role="gridcell" aria-selected="false">
+            <span class="cell-value"></span>
+        </button>
+    </template>
+
+    <script id="auth-user-data" type="application/json">
+        {% if user %}{{ user | tojson }}{% else %}{}{% endif %}
+    </script>
+    <script src="/static/app.js" type="module"></script>
+</body>
+</html>
