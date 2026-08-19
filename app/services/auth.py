@@ -64,22 +64,27 @@ class AuthService:
         settings = get_settings()
         user_id = str(user_doc["_id"])
         access_token = create_access_token(
-            data={"sub": user_id},
+            user_id,
             expires_delta=timedelta(minutes=settings.access_token_expire_minutes),
         )
 
         # Create refresh token with JTI for revocation
         jti = str(uuid4())
+        refresh_expires = timedelta(minutes=settings.refresh_token_expire_minutes)
         refresh_token = create_refresh_token(
-            data={"sub": user_id, "jti": jti}
+            user_id,
+            expires_delta=refresh_expires,
+            token_id=jti,
         )
 
         # Store refresh token in database
+        now = datetime.now(timezone.utc)
         await self.refresh_tokens.insert_one(
             {
                 "jti": jti,
                 "user_id": user_id,
-                "created_at": datetime.now(timezone.utc),
+                "created_at": now,
+                "expires_at": now + refresh_expires,
                 "revoked": False,
             }
         )

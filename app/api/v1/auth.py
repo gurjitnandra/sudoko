@@ -6,11 +6,13 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from app.core.deps import get_current_user, get_user_service
 from app.core.exceptions import AuthenticationError, BadRequestError
+from app.core.config import cookie_secure
 from app.core.session import SessionStore
 from app.schemas.auth import Token, UserLogin, UserRegister, SessionRefresh, RefreshTokenPayload
 from app.services.auth import AuthService
 
 router = APIRouter()
+
 
 def get_auth_service(user_service = Depends(get_user_service)) -> AuthService:
     return AuthService(user_service=user_service)
@@ -38,29 +40,44 @@ async def login_user(
     
     # Create a new session
     session_store = SessionStore()
-    result = await auth_service.login(payload)
-    
-    # Only create a session if login was successful
-    if result and result.get("access_token"):
-        session = await session_store.create_session(
-            user_id=result.get("user_id"),
-            user_agent=user_agent,
-            ip=client_host
-        )
-        # Add session ID to the response
-        result["session_id"] = session["id"]
-        
-        # Set secure, HTTP-only cookie
-        response.set_cookie(
-            key="session_id",
-            value=session["id"],
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            max_age=3600  # 1 hour
-        )
-    
-    return result
+    try:
+        result = await auth_service.login(payload)
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    # ``login`` returns {"tokens": TokenPair, "user": UserPublic}
+    tokens = result["tokens"]
+    response_payload = {
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "token_type": tokens.token_type,
+        "expires_in": tokens.expires_in,
+        "user_id": tokens.user_id,
+    }
+
+    session = await session_store.create_session(
+        user_id=tokens.user_id,
+        user_agent=user_agent,
+        ip=client_host,
+    )
+    response_payload["session_id"] = session["id"]
+
+    # HTTP-only session cookie (``secure`` only outside local development, so
+    # plain-HTTP LAN testing still receives the cookie).
+    response.set_cookie(
+        key="session_id",
+        value=session["id"],
+        httponly=True,
+        secure=cookie_secure(),
+        samesite="lax",
+        max_age=3600  # 1 hour
+    )
+
+    return response_payload
 
 
 @router.post("/refresh")
@@ -90,7 +107,7 @@ async def refresh_tokens(
             key="session_id",
             value=session["id"],
             httponly=True,
-            secure=True,
+            secure=cookie_secure(),
             samesite="lax",
             max_age=3600  # 1 hour
         )
@@ -153,7 +170,7 @@ async def logout_user(
     response.delete_cookie(
         "session_id",
         httponly=True,
-        secure=True,
+        secure=cookie_secure(),
         samesite="lax"
     )
     

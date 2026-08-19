@@ -38,6 +38,12 @@ class Settings(BaseSettings):
         case_sensitive = False
 
 
+def cookie_secure() -> bool:
+    """Require HTTPS for cookies everywhere except local development."""
+
+    return get_settings().environment.lower() not in {"development", "dev", "local"}
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Return a cached settings instance."""

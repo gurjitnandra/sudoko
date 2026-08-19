@@ -1,8 +1,11 @@
 """Legacy Sudoku session endpoints maintained for existing front-end compatibility."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+import secrets
 
+from fastapi import APIRouter, HTTPException, Request, Response
+
+from app.core.config import cookie_secure
 from session_manager import (
     PlayerNotFoundError,
     SessionManager,
@@ -13,16 +16,44 @@ from session_manager import (
 router = APIRouter()
 sessions = SessionManager()
 
+CLIENT_COOKIE = "sudoku_client"
+CLIENT_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+
+
+def get_client_key(request: Request, response: Response) -> str:
+    """Identify the calling *browser*, not the machine.
+
+    Player ownership used to be keyed on ``request.client.host``, which made
+    every browser and tab on one machine (or behind one NAT) look like a single
+    player. A per-browser cookie keeps the "you cannot rejoin after leaving"
+    and "only your browser can move your player" rules intact while letting
+    several browsers on the same computer play against each other.
+    """
+
+    key = (request.cookies.get(CLIENT_COOKIE) or "").strip()
+    if not key:
+        key = secrets.token_urlsafe(16)
+
+    response.set_cookie(
+        key=CLIENT_COOKIE,
+        value=key,
+        httponly=True,
+        secure=cookie_secure(),
+        samesite="lax",
+        max_age=CLIENT_COOKIE_MAX_AGE,
+    )
+    return key
+
 
 @router.post("/session")
-async def create_session(request: Request):
+async def create_session(request: Request, response: Response):
     payload = await request.json() if request.method == "POST" else {}
     name = (payload.get("name") or "").strip()
     difficulty = (payload.get("difficulty") or "easy").strip().lower()
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     try:
-        session, player = sessions.create_session(name, difficulty, ip_address)
+        session, player = sessions.create_session(name, difficulty, client_key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -37,13 +68,13 @@ async def create_session(request: Request):
 
 
 @router.post("/session/{session_id}/join")
-async def join_session(session_id: str, request: Request):
+async def join_session(session_id: str, request: Request, response: Response):
     payload = await request.json()
     name = (payload.get("name") or "").strip()
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     try:
-        player = sessions.join_session(session_id, name, ip_address)
+        player = sessions.join_session(session_id, name, client_key)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except ValueError as exc:
@@ -62,16 +93,16 @@ async def join_session(session_id: str, request: Request):
 
 
 @router.post("/session/{session_id}/leave")
-async def leave_session(session_id: str, request: Request):
+async def leave_session(session_id: str, request: Request, response: Response):
     payload = await request.json()
     player_id = payload.get("playerId")
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     if not isinstance(player_id, str):
         raise HTTPException(status_code=400, detail="playerId is required.")
 
     try:
-        removed_session, snapshot = sessions.leave_session(session_id, player_id, ip_address)
+        removed_session, snapshot = sessions.leave_session(session_id, player_id, client_key)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except PlayerNotFoundError:
@@ -100,13 +131,13 @@ async def session_state(session_id: str):
 
 
 @router.post("/session/{session_id}/move")
-async def session_move(session_id: str, request: Request):
+async def session_move(session_id: str, request: Request, response: Response):
     payload = await request.json()
     player_id = payload.get("playerId")
     row = payload.get("row")
     col = payload.get("col")
     value = payload.get("value")
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     if not isinstance(player_id, str):
         raise HTTPException(status_code=400, detail="playerId is required.")
@@ -121,7 +152,7 @@ async def session_move(session_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Value must be an integer.") from exc
 
     try:
-        sessions.apply_move(session_id, player_id, row, col, value_int, ip_address)
+        _, _, success, message = sessions.apply_move(session_id, player_id, row, col, value_int, client_key)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except PlayerNotFoundError:
@@ -131,8 +162,8 @@ async def session_move(session_id: str, request: Request):
 
     snapshot = sessions.snapshot(session_id)
     return {
-        "success": True,
-        "message": "Move processed.",
+        "success": success,
+        "message": message,
         "session": snapshot["session"],
         "players": snapshot["players"],
         "state": snapshot["state"],
@@ -140,18 +171,18 @@ async def session_move(session_id: str, request: Request):
 
 
 @router.post("/session/{session_id}/selection")
-async def session_selection(session_id: str, request: Request):
+async def session_selection(session_id: str, request: Request, response: Response):
     payload = await request.json()
     player_id = payload.get("playerId")
     row = payload.get("row")
     col = payload.get("col")
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     if not isinstance(player_id, str):
         raise HTTPException(status_code=400, detail="playerId is required.")
 
     try:
-        sessions.update_selection(session_id, player_id, row, col, ip_address)
+        sessions.update_selection(session_id, player_id, row, col, client_key)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except PlayerNotFoundError:
@@ -171,17 +202,17 @@ async def session_selection(session_id: str, request: Request):
 
 
 @router.post("/session/{session_id}/reset")
-async def session_reset(session_id: str, request: Request):
+async def session_reset(session_id: str, request: Request, response: Response):
     payload = await request.json()
     player_id = payload.get("playerId")
     difficulty = payload.get("difficulty")
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     if not isinstance(player_id, str):
         raise HTTPException(status_code=400, detail="playerId is required.")
 
     try:
-        session = sessions.reset_session(session_id, player_id, difficulty, ip_address)
+        session = sessions.reset_session(session_id, player_id, difficulty, client_key)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except PlayerNotFoundError:
@@ -199,17 +230,17 @@ async def session_reset(session_id: str, request: Request):
 
 
 @router.post("/session/{session_id}/chat")
-async def session_chat(session_id: str, request: Request):
+async def session_chat(session_id: str, request: Request, response: Response):
     payload = await request.json()
     player_id = payload.get("playerId")
     message = payload.get("message", "")
-    ip_address = (request.client.host if request.client else "").strip()
+    client_key = get_client_key(request, response)
 
     if not isinstance(player_id, str):
         raise HTTPException(status_code=400, detail="playerId is required.")
 
     try:
-        result = sessions.add_chat_message(session_id, player_id, message, ip_address)
+        result = sessions.add_chat_message(session_id, player_id, message, client_key)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except PlayerNotFoundError:

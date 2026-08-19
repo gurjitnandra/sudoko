@@ -43,7 +43,7 @@ class Player:
     is_host: bool = False
     mistakes: int = 0
     eliminated: bool = False
-    ip_address: str = ""
+    client_key: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -84,7 +84,7 @@ class GameSession:
         self._selections: Dict[str, Optional[Tuple[int, int]]] = {}
         self._chat_log: List[dict] = []
         self._chat_serial = 0
-        self._departed_ips: set[str] = set()
+        self._departed_clients: set[str] = set()
         self._last_reset_by: Optional[str] = None
         self._last_reset_at: Optional[datetime] = None
 
@@ -100,14 +100,14 @@ class GameSession:
     def sudoku(self) -> Sudoku:
         return self._sudoku
 
-    def add_player(self, name: str, *, is_host: bool = False, ip_address: str = "") -> Player:
-        ip_key = ip_address.strip() if ip_address else ""
-        if ip_key and ip_key in self._departed_ips:
-            raise ValueError("This device has left the lobby and cannot rejoin.")
+    def add_player(self, name: str, *, is_host: bool = False, client_key: str = "") -> Player:
+        key = client_key.strip() if client_key else ""
+        if key and key in self._departed_clients:
+            raise ValueError("This browser has left the lobby and cannot rejoin.")
 
         player_id = _generate_player_id()
         color = _PLAYER_COLORS[len(self._players) % len(_PLAYER_COLORS)]
-        player = Player(id=player_id, name=name, color=color, is_host=is_host, ip_address=ip_key)
+        player = Player(id=player_id, name=name, color=color, is_host=is_host, client_key=key)
         self._players[player_id] = player
         self._player_order.append(player_id)
         self._selections[player_id] = None
@@ -128,8 +128,8 @@ class GameSession:
         player = self._players.pop(player_id)
         self._player_order = [pid for pid in self._player_order if pid != player_id]
         self._selections.pop(player_id, None)
-        if player.ip_address:
-            self._departed_ips.add(player.ip_address)
+        if player.client_key:
+            self._departed_clients.add(player.client_key)
 
         if player.is_host:
             player.is_host = False
@@ -292,7 +292,7 @@ class SessionManager:
         self._sessions: Dict[str, GameSession] = {}
         self._lock = threading.Lock()
 
-    def create_session(self, host_name: str, difficulty: str = "easy", ip_address: str = "") -> Tuple[GameSession, Player]:
+    def create_session(self, host_name: str, difficulty: str = "easy", client_key: str = "") -> Tuple[GameSession, Player]:
         if not host_name:
             raise ValueError("Host name is required.")
 
@@ -301,7 +301,7 @@ class SessionManager:
             while session_id in self._sessions:
                 session_id = _generate_session_id()
             session = GameSession(session_id, difficulty)
-            host_player = session.add_player(host_name, is_host=True, ip_address=ip_address)
+            host_player = session.add_player(host_name, is_host=True, client_key=client_key)
             self._sessions[session_id] = session
         return session, host_player
 
@@ -311,19 +311,19 @@ class SessionManager:
         except KeyError as exc:
             raise SessionNotFoundError(session_id) from exc
 
-    def join_session(self, session_id: str, player_name: str, ip_address: str = "") -> Player:
+    def join_session(self, session_id: str, player_name: str, client_key: str = "") -> Player:
         if not player_name:
             raise ValueError("Player name is required.")
         session = self.get_session(session_id)
         with session.lock:
-            return session.add_player(player_name, ip_address=ip_address)
+            return session.add_player(player_name, client_key=client_key)
 
-    def leave_session(self, session_id: str, player_id: str, ip_address: str = "") -> Tuple[bool, Optional[dict]]:
+    def leave_session(self, session_id: str, player_id: str, client_key: str = "") -> Tuple[bool, Optional[dict]]:
         session = self.get_session(session_id)
         with session.lock:
             player = session.get_player(player_id)
-            if player.ip_address and ip_address and player.ip_address != ip_address:
-                raise UnauthorizedPlayerError("Device mismatch.")
+            if player.client_key and client_key and player.client_key != client_key:
+                raise UnauthorizedPlayerError("This player belongs to a different browser session.")
             session.remove_player(player_id)
             if not session.players_snapshot():
                 should_cleanup = True
@@ -345,42 +345,42 @@ class SessionManager:
 
         return should_cleanup, snapshot
 
-    def apply_move(self, session_id: str, player_id: str, row: int, col: int, value: int, ip_address: str = "") -> Tuple[GameSession, Player, bool, str]:
+    def apply_move(self, session_id: str, player_id: str, row: int, col: int, value: int, client_key: str = "") -> Tuple[GameSession, Player, bool, str]:
         session = self.get_session(session_id)
         with session.lock:
             player = session.get_player(player_id)
-            if player.ip_address and ip_address and player.ip_address != ip_address:
-                raise UnauthorizedPlayerError("Device mismatch.")
+            if player.client_key and client_key and player.client_key != client_key:
+                raise UnauthorizedPlayerError("This player belongs to a different browser session.")
             success, message = session.apply_move(player_id, row, col, value)
             return session, player, success, message
 
-    def update_selection(self, session_id: str, player_id: str, row: Optional[int], col: Optional[int], ip_address: str = "") -> GameSession:
+    def update_selection(self, session_id: str, player_id: str, row: Optional[int], col: Optional[int], client_key: str = "") -> GameSession:
         session = self.get_session(session_id)
         with session.lock:
             player = session.get_player(player_id)
-            if player.ip_address and ip_address and player.ip_address != ip_address:
-                raise UnauthorizedPlayerError("Device mismatch.")
+            if player.client_key and client_key and player.client_key != client_key:
+                raise UnauthorizedPlayerError("This player belongs to a different browser session.")
             session.set_selection(player_id, row, col)
             return session
 
-    def reset_session(self, session_id: str, player_id: str, difficulty: Optional[str], ip_address: str = "") -> GameSession:
+    def reset_session(self, session_id: str, player_id: str, difficulty: Optional[str], client_key: str = "") -> GameSession:
         session = self.get_session(session_id)
         with session.lock:
             session.ensure_host(player_id)
             player = session.get_player(player_id)
-            if player.ip_address and ip_address and player.ip_address != ip_address:
-                raise UnauthorizedPlayerError("Device mismatch.")
+            if player.client_key and client_key and player.client_key != client_key:
+                raise UnauthorizedPlayerError("This player belongs to a different browser session.")
             session.reset(difficulty)
             session._last_reset_by = player_id
             session._last_reset_at = datetime.now(timezone.utc)
             return session
 
-    def add_chat_message(self, session_id: str, player_id: str, message: str, ip_address: str = "") -> dict:
+    def add_chat_message(self, session_id: str, player_id: str, message: str, client_key: str = "") -> dict:
         session = self.get_session(session_id)
         with session.lock:
             player = session.get_player(player_id)
-            if player.ip_address and ip_address and player.ip_address != ip_address:
-                raise UnauthorizedPlayerError("Device mismatch.")
+            if player.client_key and client_key and player.client_key != client_key:
+                raise UnauthorizedPlayerError("This player belongs to a different browser session.")
             entry = session.add_chat_message(player_id, message)
             return {
                 "chat": entry,

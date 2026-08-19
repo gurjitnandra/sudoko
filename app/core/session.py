@@ -125,23 +125,15 @@ class SessionStore:
         if not data:
             return None
         expires_at = data.get("expires_at")
-        if expires_at:
+        if isinstance(expires_at, str):
             try:
-                expiry = datetime.fromisoformat(expires_at)
+                expires_at = datetime.fromisoformat(expires_at)
             except ValueError:
-                expiry = None
-            if expiry and expiry < datetime.now(timezone.utc):
-                await self.revoke_session(session_id)
-                return None
+                expires_at = None
+        if expires_at and expires_at < datetime.now(timezone.utc):
+            await self.revoke_session(session_id)
+            return None
         return data.copy()
-
-    async def refresh_session(self, session_id: str) -> None:
-        async with self._lock:
-            data = self._sessions.get(session_id)
-            if not data:
-                return
-            expire_at = datetime.now(timezone.utc) + timedelta(minutes=self._ttl_minutes)
-            data["expires_at"] = expire_at.isoformat()
 
     async def revoke_session(self, session_id: str) -> None:
         async with self._lock:

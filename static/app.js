@@ -49,6 +49,7 @@ let claims = [];
 let selectedCell = null;
 let pollingInterval = null;
 let sessionRefreshInterval = null;
+let sessionRefreshDisabled = false; // set once we know there is no login session
 const SESSION_REFRESH_INTERVAL = 15 * 60 * 1000; // 15 minutes
 const POLLING_INTERVAL = 5000; // 5 seconds
 let isFetching = false;
@@ -68,41 +69,6 @@ function withAlpha(hex, alpha) {
     if (!hex) {
         return `rgba(242, 169, 0, ${alpha})`;
     }
-
-async function handleRestartClick() {
-    if (!currentSessionId || !currentPlayer) {
-        updateStatus('Join a session before restarting.', 'warn');
-        return;
-    }
-
-    if (!isCurrentPlayerHost()) {
-        updateStatus('Only the host can restart the puzzle.', 'error');
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/session/${currentSessionId}/reset`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                playerId: currentPlayer.id,
-                difficulty: currentSessionDifficulty,
-            }),
-        });
-
-        const data = await response.json();
-        if (!response.ok || data.success === false) {
-            updateStatus(data.message || 'Unable to restart the puzzle.', 'error');
-            return;
-        }
-
-        updateStatus('Puzzle restarted for the lobby.', 'success');
-        hydrateState(data);
-    } catch (error) {
-        updateStatus('Failed to restart the puzzle.', 'error');
-        console.error(error);
-    }
-}
 
     let stripped = hex.trim();
     if (stripped.startsWith('#')) {
@@ -255,6 +221,7 @@ function toggleLobbyState(isInSession) {
 
 function resetClientState() {
     stopPolling();
+    sessionRefreshDisabled = false;
     currentSessionId = null;
     currentPlayer = null;
     boardState = [];
@@ -580,17 +547,28 @@ function hydrateState(payload) {
 }
 
 async function refreshSession() {
+    if (sessionRefreshDisabled) return;
+
     try {
         const response = await fetch('/api/v1/auth/refresh-session', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            credentials: 'include' // Important for sending cookies
+            credentials: 'include', // Important for sending cookies
+            body: JSON.stringify({}) // session id comes from the cookie
         });
 
         if (!response.ok) {
-            const error = await response.json();
+            // 400 = no session cookie at all, i.e. playing as a guest. Nothing
+            // to keep alive, so stop pinging instead of logging every cycle.
+            if (response.status === 400) {
+                sessionRefreshDisabled = true;
+                stopSessionRefresh();
+                return;
+            }
+
+            const error = await response.json().catch(() => ({}));
             console.warn('Session refresh failed:', error);
             // If refresh fails, clear the session
             if (response.status === 401) {
@@ -603,6 +581,8 @@ async function refreshSession() {
 }
 
 function startSessionRefresh() {
+    if (sessionRefreshDisabled) return;
+
     // Initial refresh
     refreshSession();
     
@@ -769,3 +749,344 @@ function init() {
 }
 
 window.addEventListener('DOMContentLoaded', init);
+
+/* ---------------------------------------------------------------------------
+ * Rendering / status helpers
+ * ------------------------------------------------------------------------- */
+
+function updateStatus(message, state = 'info') {
+    if (!statusBar) return;
+    statusBar.textContent = message;
+    statusBar.dataset.state = state;
+}
+
+function isCurrentPlayerHost() {
+    if (!currentPlayer) return false;
+    const match = latestPlayersSnapshot.find((player) => player.id === currentPlayer.id);
+    return Boolean(match ? match.isHost : currentPlayer.isHost);
+}
+
+function cachePlayerColors(roster = []) {
+    roster.forEach((player) => {
+        if (player?.id && player.color) {
+            playerColorCache.set(player.id, player.color);
+        }
+    });
+}
+
+function renderBoard() {
+    if (!boardElement) return;
+
+    const cells = boardElement.querySelectorAll('.cell');
+    if (!cells.length) return;
+
+    // Map cell -> list of player ids currently pointing at it.
+    const selectionsByCell = new Map();
+    activeSelections.forEach((coords, playerId) => {
+        if (!coords) return;
+        const key = selectionKey(coords.row, coords.col);
+        if (!selectionsByCell.has(key)) {
+            selectionsByCell.set(key, []);
+        }
+        selectionsByCell.get(key).push(playerId);
+    });
+
+    cells.forEach((cell) => {
+        const row = Number(cell.dataset.row);
+        const col = Number(cell.dataset.col);
+        const valueDisplay = cell.querySelector('.cell-value');
+
+        const value = boardState?.[row]?.[col] ?? 0;
+        const isGiven = Boolean(givens?.[row]?.[col]);
+        const claimedBy = claims?.[row]?.[col] || null;
+
+        valueDisplay.textContent = value ? String(value) : '';
+
+        cell.dataset.given = isGiven ? 'true' : 'false';
+        cell.dataset.editable = !isGiven && !isEliminated ? 'true' : 'false';
+        cell.dataset.claimed = claimedBy ? 'true' : 'false';
+        cell.disabled = isEliminated;
+
+        // Colour cells by the player who filled them.
+        if (claimedBy) {
+            const claimColor = playerColorCache.get(claimedBy) || '#f2a900';
+            cell.style.setProperty('--cell-claim-color', withAlpha(claimColor, 0.22));
+            cell.style.setProperty('--cell-claim-border', withAlpha(claimColor, 0.65));
+            valueDisplay.style.color = claimColor;
+        } else {
+            cell.style.removeProperty('--cell-claim-color');
+            cell.style.removeProperty('--cell-claim-border');
+            valueDisplay.style.color = isGiven ? '#fafafa' : '#fefefe';
+        }
+
+        // Highlight selections (mine strongest, other players softer).
+        const key = selectionKey(row, col);
+        const watchers = selectionsByCell.get(key) || [];
+        const mine = Boolean(currentPlayer && watchers.includes(currentPlayer.id));
+        const others = watchers.filter((playerId) => playerId !== currentPlayer?.id);
+
+        cell.dataset.selected = mine ? 'true' : 'false';
+        cell.setAttribute('aria-selected', mine ? 'true' : 'false');
+
+        if (mine) {
+            const myColor = getActivePlayerColor();
+            cell.style.setProperty('--cell-selection-color', withAlpha(myColor, 0.45));
+        } else if (others.length) {
+            const otherColor = playerColorCache.get(others[0]) || '#45aaf2';
+            cell.style.setProperty('--cell-selection-color', withAlpha(otherColor, 0.2));
+        } else {
+            cell.style.removeProperty('--cell-selection-color');
+        }
+    });
+}
+
+function renderScoreboard(roster = [], limit = mistakeLimit) {
+    if (!scoreList) return;
+
+    cachePlayerColors(roster);
+    scoreboardSection.hidden = roster.length === 0;
+    scoreList.innerHTML = '';
+
+    roster.forEach((player) => {
+        const item = document.createElement('li');
+        item.className = 'score-item';
+        item.dataset.eliminated = player.eliminated ? 'true' : 'false';
+
+        const swatch = document.createElement('span');
+        swatch.className = 'score-color';
+        swatch.style.background = player.color || '#f2a900';
+
+        const name = document.createElement('span');
+        name.className = 'score-name';
+        if (player.isHost) {
+            name.classList.add('score-host');
+        }
+        name.textContent = player.name;
+
+        const score = document.createElement('span');
+        score.className = 'score-value';
+        score.textContent = `${player.score ?? 0} pts`;
+
+        const mistakes = document.createElement('span');
+        mistakes.className = 'score-mistakes';
+        mistakes.dataset.state = player.eliminated ? 'eliminated' : 'active';
+        mistakes.textContent = `${player.mistakes ?? 0}/${limit}`;
+
+        item.append(swatch, name, score, mistakes);
+        scoreList.appendChild(item);
+    });
+}
+
+function updatePlayerStatus(roster = []) {
+    cachePlayerColors(roster);
+
+    if (!currentPlayer) {
+        isEliminated = false;
+        updateMistakeDisplay(0);
+        return;
+    }
+
+    const me = roster.find((player) => player.id === currentPlayer.id);
+    if (me) {
+        currentPlayer = { ...currentPlayer, ...me };
+        playerColorCache.set(me.id, me.color);
+        document.documentElement.style.setProperty('--player-highlight', me.color);
+    }
+
+    isEliminated = Boolean(me?.eliminated);
+    updateMistakeDisplay(me?.mistakes ?? 0);
+
+    if (lossBanner) {
+        lossBanner.hidden = !isEliminated;
+    }
+}
+
+function updateRestartAvailability(roster = []) {
+    if (!restartContainer) return;
+
+    const puzzleComplete = Boolean(latestStateSnapshot?.complete);
+    const everyoneOut = roster.length > 0 && roster.every((player) => player.eliminated);
+    const showRestart = Boolean(currentSessionId) && everyoneOut && !puzzleComplete;
+
+    restartContainer.hidden = !showRestart;
+    restartContainer.classList.toggle('d-none', !showRestart);
+
+    if (!restartButton) return;
+
+    const hosting = isCurrentPlayerHost();
+    restartButton.disabled = !showRestart || !hosting;
+
+    const message = restartContainer.querySelector('.restart-message');
+    if (message) {
+        message.textContent = hosting
+            ? 'Everyone is out! As host, you can restart the puzzle for the same lobby.'
+            : 'Everyone is out! Waiting for the host to restart the puzzle.';
+    }
+}
+
+function formatChatTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function syncChatLog(entries = []) {
+    if (!chatLogElement) return;
+
+    const latestId = entries.length ? entries[entries.length - 1].id : null;
+    if (latestId === lastChatId && chatLogElement.childElementCount === entries.length) {
+        return;
+    }
+
+    chatLog = entries;
+    lastChatId = latestId;
+    chatLogElement.innerHTML = '';
+
+    entries.forEach((entry) => {
+        const wrapper = document.createElement('article');
+        wrapper.className = 'chat-message';
+        wrapper.dataset.playerId = entry.playerId || '';
+
+        const author = document.createElement('span');
+        author.className = 'chat-author';
+        author.style.color = entry.color || playerColorCache.get(entry.playerId) || '#f2a900';
+        author.textContent = entry.playerName || 'Player';
+
+        const text = document.createElement('span');
+        text.className = 'chat-text';
+        text.textContent = entry.message;
+
+        const time = document.createElement('span');
+        time.className = 'chat-timestamp';
+        time.textContent = formatChatTimestamp(entry.timestamp);
+
+        wrapper.append(author, text, time);
+        chatLogElement.appendChild(wrapper);
+    });
+
+    chatLogElement.scrollTop = chatLogElement.scrollHeight;
+}
+
+/* ---------------------------------------------------------------------------
+ * Lobby / chat actions
+ * ------------------------------------------------------------------------- */
+
+async function leaveSession() {
+    if (!currentSessionId || !currentPlayer) {
+        resetClientState();
+        return;
+    }
+
+    const sessionId = currentSessionId;
+    const playerId = currentPlayer.id;
+
+    try {
+        const response = await fetch(`/api/session/${sessionId}/leave`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ playerId }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        resetClientState();
+
+        if (!response.ok || data.success === false) {
+            updateStatus(data.detail || data.message || 'Unable to leave the session.', 'error');
+            return;
+        }
+
+        updateStatus(data.message || 'You have left the game.', 'info');
+    } catch (error) {
+        resetClientState();
+        updateStatus('Leave request failed.', 'error');
+        console.error(error);
+    }
+}
+
+async function sendChatMessage(message) {
+    const content = (message || '').trim();
+    if (!content) return;
+
+    if (!currentSessionId || !currentPlayer) {
+        updateStatus('Join a session before chatting.', 'warn');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/session/${currentSessionId}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ playerId: currentPlayer.id, message: content }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success === false) {
+            updateStatus(data.detail || data.message || 'Unable to send message.', 'error');
+            return;
+        }
+
+        if (data.state?.chatLog) {
+            syncChatLog(data.state.chatLog);
+        }
+        if (data.players) {
+            latestPlayersSnapshot = data.players;
+            renderScoreboard(data.players, mistakeLimit);
+        }
+    } catch (error) {
+        updateStatus('Failed to send message.', 'error');
+        console.error(error);
+    }
+}
+
+function handleChatSubmit(event) {
+    event.preventDefault();
+    if (!chatInput) return;
+    const message = chatInput.value;
+    chatInput.value = '';
+    sendChatMessage(message);
+}
+
+function handleEmojiClick(event) {
+    const button = event.target.closest('.emoji-btn');
+    if (!button || button.disabled) return;
+    sendChatMessage(button.dataset.emoji || '');
+}
+
+async function handleRestartClick() {
+    if (!currentSessionId || !currentPlayer) {
+        updateStatus('Join a session before restarting.', 'warn');
+        return;
+    }
+
+    if (!isCurrentPlayerHost()) {
+        updateStatus('Only the host can restart the puzzle.', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/session/${currentSessionId}/reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                playerId: currentPlayer.id,
+                difficulty: currentSessionDifficulty,
+            }),
+        });
+
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            updateStatus(data.message || 'Unable to restart the puzzle.', 'error');
+            return;
+        }
+
+        updateStatus('Puzzle restarted for the lobby.', 'success');
+        hydrateState(data);
+    } catch (error) {
+        updateStatus('Failed to restart the puzzle.', 'error');
+        console.error(error);
+    }
+}
+
